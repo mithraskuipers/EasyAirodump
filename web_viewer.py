@@ -823,7 +823,7 @@ async function stopScan() {
   loadInterfaces();
 }
 
-function drawChannelGraph(data) {
+function drawChannelGraph(apsInput) {
   const canvas = document.getElementById('channel-canvas');
   const wrap = canvas.parentElement;
   const dpr = window.devicePixelRatio || 1;
@@ -841,7 +841,7 @@ function drawChannelGraph(data) {
     ? Array.from({length: 14}, (_, i) => i + 1)
     : [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165];
 
-  const aps = (data.aps || []).filter(ap => {
+  const aps = (apsInput || []).filter(ap => {
     const ch = parseInt(ap.channel, 10);
     if (isNaN(ch)) return false;
     return (bandMode === '2.4') ? (ch >= 1 && ch <= 14) : (ch > 14);
@@ -998,7 +998,7 @@ function render(data) {
   }
 
   if (viewMode === 'graph') {
-    drawChannelGraph(data);
+    drawChannelGraph(shownAps);
   }
 
   const staBody = document.getElementById('sta-body');
@@ -1029,7 +1029,7 @@ async function poll() {
 // Init
 document.getElementById('refresh-badge').textContent = REFRESH + 'ms';
 window.addEventListener('resize', () => {
-  if (viewMode === 'graph' && lastData) drawChannelGraph(lastData);
+  if (viewMode === 'graph' && lastData) render(lastData);
 });
 loadInterfaces();
 // If already scanning (page refresh), go to dash
