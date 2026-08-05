@@ -546,6 +546,54 @@ HTML = r"""<!DOCTYPE html>
   .enc-wpa { color: var(--green); }
   .enc-wep { color: var(--yellow); }
   .empty { color: var(--muted); padding: 1.5rem; text-align: center; }
+
+  /* ── View / band toggle ── */
+  .view-bar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.4rem;
+  }
+  .view-toggle, .band-toggle { display: flex; gap: 0.5rem; }
+  #band-toggle.hidden { display: none; }
+
+  /* ── Channel graph ── */
+  .graph-wrap {
+    display: none;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    padding: 0.8rem;
+  }
+  .graph-wrap.show { display: block; }
+  #channel-canvas {
+    width: 100%;
+    height: 320px;
+    display: block;
+  }
+  .graph-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    margin-top: 0.7rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--text);
+  }
+  .legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
 </style>
 </head>
 <body>
@@ -570,6 +618,7 @@ HTML = r"""<!DOCTYPE html>
     <span class="badge">APs: <strong id="ap-count">0</strong></span>
     <span class="badge">Clients: <strong id="sta-count">0</strong></span>
     <span class="badge" id="iface-badge">—</span>
+    <span class="badge">Refresh: <strong id="refresh-badge">—</strong></span>
     <button class="btn-stop" onclick="stopScan()">Stop</button>
   </header>
 
@@ -586,8 +635,19 @@ HTML = r"""<!DOCTYPE html>
     <button class="toggle-btn on" id="btn-hide-pwr1" onclick="toggleHidePwr1()">Hide PWR -1</button>
   </div>
 
+  <div class="view-bar">
+    <div class="view-toggle">
+      <button class="toggle-btn on" id="btn-view-table" onclick="setView('table')">Table</button>
+      <button class="toggle-btn" id="btn-view-graph" onclick="setView('graph')">Channel Graph</button>
+    </div>
+    <div class="band-toggle" id="band-toggle">
+      <button class="toggle-btn on" id="btn-band-24" onclick="setBand('2.4')">2.4 GHz</button>
+      <button class="toggle-btn" id="btn-band-5" onclick="setBand('5')">5 GHz</button>
+    </div>
+  </div>
+
   <h2>Access Points · strongest first</h2>
-  <div class="table-wrap">
+  <div class="table-wrap" id="ap-table-wrap">
     <table>
       <thead>
         <tr>
@@ -607,6 +667,11 @@ HTML = r"""<!DOCTYPE html>
         <tr><td colspan="10" class="empty">Waiting for data…</td></tr>
       </tbody>
     </table>
+  </div>
+
+  <div class="graph-wrap" id="ap-graph-wrap">
+    <canvas id="channel-canvas"></canvas>
+    <div id="graph-legend" class="graph-legend"></div>
   </div>
 
   <h2>Clients / Stations</h2>
@@ -636,6 +701,34 @@ let topN = 10;          // 1-10, or 0 = show all
 let lastData = null;    // cache last payload for instant filter
 let hideHiddenEssid = true;   // hide empty ESSID by default
 let hidePwrMinus1 = true;     // hide PWR -1 by default
+let viewMode = 'table';       // 'table' or 'graph'
+let bandMode = '2.4';         // '2.4' or '5'
+
+function essidHue(essid, bssid) {
+  const key = (essid && essid.trim()) ? essid : bssid;
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 31 + key.charCodeAt(i)) & 0xffffffff;
+  }
+  return Math.abs(hash) % 360;
+}
+
+function setView(mode) {
+  viewMode = mode;
+  document.getElementById('btn-view-table').classList.toggle('on', mode === 'table');
+  document.getElementById('btn-view-graph').classList.toggle('on', mode === 'graph');
+  document.getElementById('ap-table-wrap').style.display = (mode === 'table') ? 'block' : 'none';
+  document.getElementById('ap-graph-wrap').classList.toggle('show', mode === 'graph');
+  document.getElementById('band-toggle').classList.toggle('hidden', mode !== 'graph');
+  if (lastData) render(lastData);
+}
+
+function setBand(band) {
+  bandMode = band;
+  document.getElementById('btn-band-24').classList.toggle('on', band === '2.4');
+  document.getElementById('btn-band-5').classList.toggle('on', band === '5');
+  if (lastData) render(lastData);
+}
 
 function onTopNChange() {
   const slider = document.getElementById('topn-slider');
@@ -730,6 +823,118 @@ async function stopScan() {
   loadInterfaces();
 }
 
+function drawChannelGraph(data) {
+  const canvas = document.getElementById('channel-canvas');
+  const wrap = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = Math.max(280, wrap.clientWidth);
+  const cssHeight = 320;
+  canvas.width = cssWidth * dpr;
+  canvas.height = cssHeight * dpr;
+  canvas.style.width = cssWidth + 'px';
+  canvas.style.height = cssHeight + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const channels = (bandMode === '2.4')
+    ? Array.from({length: 14}, (_, i) => i + 1)
+    : [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165];
+
+  const aps = (data.aps || []).filter(ap => {
+    const ch = parseInt(ap.channel, 10);
+    if (isNaN(ch)) return false;
+    return (bandMode === '2.4') ? (ch >= 1 && ch <= 14) : (ch > 14);
+  });
+
+  const padL = 42, padR = 14, padT = 22, padB = 26;
+  const plotW = cssWidth - padL - padR;
+  const plotH = cssHeight - padT - padB;
+  const yMin = -100, yMax = -20;
+
+  function chanX(ch) {
+    let idx = channels.indexOf(ch);
+    if (idx < 0) idx = 0;
+    return padL + (idx + 0.5) / channels.length * plotW;
+  }
+  function pwrY(pwr) {
+    const clamped = Math.max(yMin, Math.min(yMax, pwr));
+    return padT + (1 - (clamped - yMin) / (yMax - yMin)) * plotH;
+  }
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '10px sans-serif';
+  ctx.lineWidth = 1;
+  ctx.textAlign = 'left';
+  for (let db = yMin; db <= yMax; db += 20) {
+    const y = pwrY(db);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+    ctx.fillText(String(db), 2, y + 3);
+  }
+
+  ctx.textAlign = 'center';
+  channels.forEach(ch => {
+    ctx.fillText(String(ch), chanX(ch), cssHeight - padB + 15);
+  });
+
+  const legend = document.getElementById('graph-legend');
+
+  if (aps.length === 0) {
+    ctx.fillStyle = '#8b949e';
+    ctx.fillText('No networks in this band', cssWidth / 2, cssHeight / 2);
+    legend.innerHTML = '';
+    return;
+  }
+
+  const sigmaChannels = (bandMode === '2.4') ? 2.2 : 1.6;
+  const sigmaPx = (sigmaChannels / channels.length) * plotW;
+  const legendItems = [];
+
+  aps.forEach(ap => {
+    const ch = parseInt(ap.channel, 10);
+    const cx = chanX(ch);
+    const baseY = padT + plotH;
+    const peakY = pwrY(ap.power);
+    const peakHeight = baseY - peakY;
+    if (peakHeight <= 0) return;
+    const hue = essidHue(ap.essid, ap.bssid);
+    const stroke = `hsl(${hue}, 70%, 58%)`;
+    const fill = `hsla(${hue}, 70%, 58%, 0.25)`;
+
+    ctx.beginPath();
+    ctx.moveTo(padL, baseY);
+    const steps = 60;
+    for (let i = 0; i <= steps; i++) {
+      const x = padL + (i / steps) * plotW;
+      const g = Math.exp(-Math.pow(x - cx, 2) / (2 * sigmaPx * sigmaPx));
+      ctx.lineTo(x, baseY - peakHeight * g);
+    }
+    ctx.lineTo(padL + plotW, baseY);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+
+    ctx.fillStyle = stroke;
+    ctx.font = '11px sans-serif';
+    const label = (ap.essid && ap.essid.trim()) ? ap.essid : ap.bssid;
+    ctx.fillText(label, cx, Math.max(peakY - 6, padT + 10));
+
+    legendItems.push({ label, color: stroke, power: ap.power, channel: ch });
+  });
+
+  legendItems.sort((a, b) => b.power - a.power);
+  legend.innerHTML = legendItems.map(it =>
+    `<span class="legend-item"><span class="legend-swatch" style="background:${it.color}"></span>${it.label} · ch${it.channel} · ${it.power} dBm</span>`
+  ).join('');
+}
+
 function pwrColor(p) {
   if (p >= -50) return '#3fb950';
   if (p >= -65) return '#d29922';
@@ -792,6 +997,10 @@ function render(data) {
       </tr>`).join('');
   }
 
+  if (viewMode === 'graph') {
+    drawChannelGraph(data);
+  }
+
   const staBody = document.getElementById('sta-body');
   if (data.stations.length === 0) {
     staBody.innerHTML = '<tr><td colspan="6" class="empty">No clients yet</td></tr>';
@@ -818,6 +1027,10 @@ async function poll() {
 }
 
 // Init
+document.getElementById('refresh-badge').textContent = REFRESH + 'ms';
+window.addEventListener('resize', () => {
+  if (viewMode === 'graph' && lastData) drawChannelGraph(lastData);
+});
 loadInterfaces();
 // If already scanning (page refresh), go to dash
 fetch('/api/status').then(r => r.json()).then(d => {
