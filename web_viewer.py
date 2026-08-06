@@ -1222,19 +1222,32 @@ def main():
         print("    Run with:  sudo python3 web_viewer.py")
         print()
 
-    # Local IP for convenience
+    # List every interface with an IPv4 address, so the right one
+    # (e.g. the hotspot dongle) is always visible, even with no internet.
+    ips = []
     try:
-        ip = subprocess.check_output(
-            ["hostname", "-I"], text=True, stderr=subprocess.DEVNULL
-        ).split()[0]
+        out = subprocess.check_output(
+            ["ip", "-4", "-o", "addr", "show"], text=True, stderr=subprocess.DEVNULL
+        )
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1] != "lo":
+                iface = parts[1]
+                addr = parts[3].split("/")[0]
+                ips.append((iface, addr))
     except Exception:
-        ip = "your-ip"
+        pass
 
     print("=" * 50)
     print("  airodump-ng  ·  Live Browser Viewer")
     print("=" * 50)
     print(f"  Local:    http://127.0.0.1:{PORT}")
-    print(f"  Network:  http://{ip}:{PORT}")
+    if ips:
+        for iface, addr in ips:
+            print(f"  Network:  http://{addr}:{PORT}   ({iface})")
+    else:
+        print("  Network:  no interface has an IP yet")
+        print("            set up a role first: sudo ./cfg_wifi_interface_roles.sh")
     print("=" * 50)
     print("  Open the URL on phone or computer,")
     print("  tap an interface button to start scanning.")
