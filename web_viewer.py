@@ -547,6 +547,31 @@ HTML = r"""<!DOCTYPE html>
   .enc-wep { color: var(--yellow); }
   .empty { color: var(--muted); padding: 1.5rem; text-align: center; }
 
+  tr.ap-row { cursor: pointer; }
+  tr.ap-row:hover { background: rgba(255,255,255,0.05); }
+  tr.ap-row:active { background: rgba(255,255,255,0.09); }
+
+  #channel-canvas { cursor: pointer; }
+
+  #mac-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(12px);
+    background: #1f2733;
+    color: #e6edf3;
+    border: 1px solid var(--border);
+    padding: 0.55rem 1rem;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    z-index: 999;
+  }
+  #mac-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
   /* ── View / band toggle ── */
   .view-bar {
     display: flex;
@@ -703,6 +728,7 @@ let hideHiddenEssid = true;   // hide empty ESSID by default
 let hidePwrMinus1 = true;     // hide PWR -1 by default
 let viewMode = 'table';       // 'table' or 'graph'
 let bandMode = '2.4';         // '2.4' or '5'
+let graphHitAreas = [];       // clickable regions on the channel graph canvas
 
 function essidHue(essid, bssid) {
   const key = (essid && essid.trim()) ? essid : bssid;
@@ -824,6 +850,7 @@ async function stopScan() {
 }
 
 function drawChannelGraph(apsInput) {
+  graphHitAreas = [];
   const canvas = document.getElementById('channel-canvas');
   const wrap = canvas.parentElement;
   const dpr = window.devicePixelRatio || 1;
@@ -924,7 +951,15 @@ function drawChannelGraph(apsInput) {
     ctx.fillStyle = stroke;
     ctx.font = '11px sans-serif';
     const label = (ap.essid && ap.essid.trim()) ? ap.essid : ap.bssid;
-    ctx.fillText(label, cx, Math.max(peakY - 6, padT + 10));
+    const labelY = Math.max(peakY - 6, padT + 10);
+    ctx.fillText(label, cx, labelY);
+
+    const textWidth = ctx.measureText(label).width;
+    graphHitAreas.push({
+      x1: cx - textWidth / 2 - 6, x2: cx + textWidth / 2 + 6,
+      y1: labelY - 13, y2: labelY + 5,
+      bssid: ap.bssid, essid: label
+    });
 
     legendItems.push({ label, color: stroke, power: ap.power, channel: ch });
   });
@@ -983,7 +1018,7 @@ function render(data) {
     apBody.innerHTML = '<tr><td colspan="10" class="empty">Waiting for networks…</td></tr>';
   } else {
     apBody.innerHTML = shownAps.map(ap => `
-      <tr>
+      <tr class="ap-row" data-bssid="${ap.bssid}">
         <td>${pwrBar(ap.power)}</td>
         <td class="bssid">${ap.bssid}</td>
         <td class="essid" title="${ap.essid}">${ap.essid || '<i style="color:#8b949e">hidden</i>'}</td>
@@ -1025,6 +1060,57 @@ async function poll() {
   } catch (e) {}
   if (polling) setTimeout(poll, REFRESH);
 }
+
+function showToast(msg) {
+  let toast = document.getElementById('mac-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'mac-toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toast._hideTimer);
+  toast._hideTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+}
+
+function copyMac(mac) {
+  if (!mac) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(mac)
+      .then(() => showToast('MAC address copied: ' + mac))
+      .catch(() => { fallbackCopy(mac); showToast('MAC address copied: ' + mac); });
+  } else {
+    fallbackCopy(mac);
+    showToast('MAC address copied: ' + mac);
+  }
+}
+
+document.getElementById('ap-body').addEventListener('click', (e) => {
+  const row = e.target.closest('tr.ap-row');
+  if (row && row.dataset.bssid) copyMac(row.dataset.bssid);
+});
+
+document.getElementById('channel-canvas').addEventListener('click', (e) => {
+  const canvas = e.currentTarget;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const hit = graphHitAreas.find(a => x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2);
+  if (hit) copyMac(hit.bssid);
+});
 
 // Init
 document.getElementById('refresh-badge').textContent = REFRESH + 'ms';
