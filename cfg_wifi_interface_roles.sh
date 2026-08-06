@@ -21,6 +21,7 @@ echo
 declare -a NAMES
 declare -a MACS
 declare -a STATES
+declare -a TYPES
 
 for path in /sys/class/net/*; do
     iface="$(basename "$path")"
@@ -31,9 +32,17 @@ for path in /sys/class/net/*; do
     state="$(nmcli -t -f DEVICE,STATE device status 2>/dev/null | awk -F: -v d="$iface" '$1==d {print $2}')"
     [[ -z "$state" ]] && state="unmanaged"
 
+    devpath="$(readlink -f "$path/device" 2>/dev/null)"
+    if [[ "$devpath" == *"/usb"* ]]; then
+        type="usb"
+    else
+        type="onboard"
+    fi
+
     NAMES+=("$iface")
     MACS+=("$mac")
     STATES+=("$state")
+    TYPES+=("$type")
 done
 
 if [[ ${#NAMES[@]} -eq 0 ]]; then
@@ -44,13 +53,35 @@ fi
 echo "Detected wireless interfaces:"
 echo
 for i in "${!NAMES[@]}"; do
-    printf "  [%d] %-10s  MAC: %-17s  NM state: %s\n" "$i" "${NAMES[$i]}" "${MACS[$i]}" "${STATES[$i]}"
+    printf "  [%d] %-10s  MAC: %-17s  Type: %-7s  NM state: %s\n" "$i" "${NAMES[$i]}" "${MACS[$i]}" "${TYPES[$i]}" "${STATES[$i]}"
 done
 echo
 
 read -rp "Select interface number for INTERNET connectivity (blank to skip): " inet_sel
 read -rp "Select interface number to reserve UNMANAGED for airodump-ng (blank to skip): " scan_sel
 read -rp "Select interface number to broadcast a phone HOTSPOT (blank to skip): " hs_sel
+
+confirm_if_onboard() {
+    local idx="$1"
+    local role="$2"
+    if [[ "${TYPES[$idx]}" == "onboard" ]]; then
+        echo
+        echo "[!] WARNING: ${NAMES[$idx]} looks like the Raspberry Pi's onboard wifi,"
+        echo "    probably the one you're using for SSH or VNC right now."
+        echo "    This setting is remembered permanently, so after this the Pi"
+        echo "    will likely stop auto-connecting to your normal wifi, even"
+        echo "    after a reboot. You may need a monitor and keyboard, or a"
+        echo "    wired connection, to reach it again."
+        echo
+        read -rp "    Assign the $role role to ${NAMES[$idx]} anyway? [y/N]: " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+        echo "    [*] Skipped."
+        return 1
+    fi
+    return 0
+}
 
 manage_iface() {
     local idx="$1"
@@ -135,7 +166,7 @@ fi
 if [[ "$scan_sel" =~ ^[0-9]+$ ]] && (( scan_sel >= 0 && scan_sel < ${#NAMES[@]} )); then
     if [[ -n "$inet_sel" && "$scan_sel" == "$inet_sel" ]]; then
         echo "[!] Cannot use the same interface for both roles. Skipping unmanage step."
-    else
+    elif confirm_if_onboard "$scan_sel" "airodump (unmanaged)"; then
         unmanage_iface "$scan_sel"
     fi
 fi
@@ -143,7 +174,7 @@ fi
 if [[ "$hs_sel" =~ ^[0-9]+$ ]] && (( hs_sel >= 0 && hs_sel < ${#NAMES[@]} )); then
     if [[ ( -n "$inet_sel" && "$hs_sel" == "$inet_sel" ) || ( -n "$scan_sel" && "$hs_sel" == "$scan_sel" ) ]]; then
         echo "[!] Hotspot interface must be different from the other roles. Skipping."
-    else
+    elif confirm_if_onboard "$hs_sel" "hotspot"; then
         hotspot_iface "$hs_sel"
     fi
 fi
